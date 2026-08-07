@@ -2,6 +2,7 @@
 
 #include "AudioSessionMonitor.h"
 
+#include "REL/THook.h"
 #include "RE/S/Setting.h"
 
 #include <algorithm>
@@ -37,6 +38,12 @@ namespace
 	// event context that an SFSE plugin does not own.
 	constexpr std::size_t kSettingFloatUpdateOffset = 0x684B30;
 	constexpr std::size_t kAudioVolumeEventOffset = 0x2CD6D60;
+	// The music/settings slider calls the setting update function here.  This
+	// call-site hook observes user changes without touching the audio state.
+	constexpr std::size_t kMusicSliderSettingUpdateCallOffset = 0x15128C0;
+
+	using setting_update_t      = RE::Setting* (*)(RE::Setting*, float);
+	using setting_update_hook_t = RE::Setting*(RE::Setting*, float);
 
 	struct MusicBusLike
 	{
@@ -143,6 +150,18 @@ namespace
 			mutedVolume(a_mutedVolume)
 		{}
 
+		void ObserveManualMusicVolume(RE::Setting* const a_setting) noexcept
+		{
+			if (!a_setting || a_setting != GetMusicSetting()) {
+				return;
+			}
+
+			const float current = ReadMusicValue(a_setting);
+			if (std::isfinite(current) && current >= 0.0f && current <= 1.0f) {
+				restoreVolume.store(current, std::memory_order_relaxed);
+			}
+		}
+
 		[[nodiscard]] bool Apply(const bool a_muted)
 		{
 			auto* setting = GetMusicSetting();
@@ -162,23 +181,44 @@ namespace
 			}
 			settingUnavailableLogged = false;
 
-			if (!initialized || !currentlyMuted) {
-				normalVolume = current;
-			}
 			if (!initialized) {
+				restoreVolume.store(current, std::memory_order_relaxed);
+				lastAppliedVolume = current;
 				initialized = true;
-				REX::INFO("StarfieldAudioDuck: captured initial Starfield music volume {:.3f}", normalVolume);
+				REX::INFO("StarfieldAudioDuck: captured initial Starfield music volume {:.3f}", current);
+			} else if (!currentlyMuted) {
+				// While external audio is inactive, the game owns the value.  This
+				// is only bookkeeping; no audio update is sent here.
+				restoreVolume.store(current, std::memory_order_relaxed);
+			} else if (!a_muted && !NearlyEqual(current, lastAppliedVolume)) {
+				// Fallback for changes made through a path other than the observed
+				// settings slider.  A manual value is adopted only as part of the
+				// external-active -> external-inactive transition.
+				restoreVolume.store(current, std::memory_order_relaxed);
 			}
 
+			// A manual slider change while external audio is active must be
+			// respected.  Do not reapply the muted value until the next actual
+			// external-audio state transition.
 			if (a_muted == currentlyMuted) {
 				return true;
 			}
 
-			const float target = a_muted ? mutedVolume : normalVolume;
+			const float target = a_muted ? mutedVolume : restoreVolume.load(std::memory_order_relaxed);
 			const auto audioBusID = ReadMusicAudioBusID(setting);
 			if (audioBusID == 0) {
 				LogSettingUnavailable("music audio-bus ID is unavailable");
 				return false;
+			}
+
+			if (NearlyEqual(current, target)) {
+				currentlyMuted = a_muted;
+				lastAppliedVolume = target;
+				REX::INFO(
+					"StarfieldAudioDuck: {} music volume to {:.3f} (already at target)",
+					a_muted ? "muted" : "restored",
+					target);
+				return true;
 			}
 
 			if (!ApplyThroughStarfield(setting, audioBusID, target)) {
@@ -186,6 +226,7 @@ namespace
 			}
 
 			currentlyMuted = a_muted;
+			lastAppliedVolume = target;
 			REX::INFO(
 				"StarfieldAudioDuck: {} music volume to {:.3f}",
 				a_muted ? "muted" : "restored",
@@ -245,7 +286,6 @@ namespace
 			const std::uint32_t a_audioBusID,
 			const float a_value)
 		{
-			using setting_update_t = RE::Setting* (*)(RE::Setting*, float);
 			using audio_event_t = std::uint32_t (*)(
 				std::uint32_t,
 				float,
@@ -293,20 +333,61 @@ namespace
 			return true;
 		}
 
-		float normalVolume{ 1.0f };
-		float mutedVolume{ 0.0f };
-		bool  initialized{ false };
-		bool  currentlyMuted{ false };
-		bool  settingUnavailableLogged{ false };
+		static bool NearlyEqual(const float a_left, const float a_right) noexcept
+		{
+			return std::fabs(a_left - a_right) <= 0.001f;
+		}
+
+		std::atomic<float> restoreVolume{ 1.0f };
+		float              mutedVolume{ 0.0f };
+		float              lastAppliedVolume{ 1.0f };
+		bool               initialized{ false };
+		bool               currentlyMuted{ false };
+		bool               settingUnavailableLogged{ false };
 	};
 
 	Config                                                   g_config{};
 	std::unique_ptr<MusicVolumeController>                  g_musicController{};
 	std::unique_ptr<StarfieldAudioDuck::AudioSessionMonitor> g_audioMonitor{};
+	std::unique_ptr<REL::THook<setting_update_hook_t>>      g_musicSettingHook{};
 	const SFSE::TaskInterface*                               g_taskInterface{ nullptr };
 	std::atomic<bool>                                        g_desiredMuted{ false };
 	std::atomic<bool>                                        g_taskPending{ false };
 	std::atomic<std::uint32_t>                               g_applyRetries{ 0 };
+
+	RE::Setting* MusicSettingUpdateHook(RE::Setting* a_setting, float a_value)
+	{
+		if (!g_musicSettingHook) {
+			return nullptr;
+		}
+
+		a_setting = (*g_musicSettingHook)(a_setting, a_value);
+		if (g_musicController) {
+			g_musicController->ObserveManualMusicVolume(a_setting);
+		}
+		return a_setting;
+	}
+
+	[[nodiscard]] bool InstallMusicSettingHook()
+	{
+		try {
+			g_musicSettingHook = std::make_unique<REL::THook<setting_update_hook_t>>(
+				REL::Offset(kMusicSliderSettingUpdateCallOffset),
+				0,
+				&MusicSettingUpdateHook);
+			if (!g_musicSettingHook->Init() || !g_musicSettingHook->Enable()) {
+				g_musicSettingHook.reset();
+				return false;
+			}
+			return true;
+		} catch (const std::exception& e) {
+			REX::ERROR("StarfieldAudioDuck: failed to install music setting hook: {}", e.what());
+		} catch (...) {
+			REX::ERROR("StarfieldAudioDuck: failed to install music setting hook");
+		}
+		g_musicSettingHook.reset();
+		return false;
+	}
 
 	void RequestMusicState(bool a_muted);
 
@@ -375,18 +456,18 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 		return false;
 	}
 
-	SFSE::InitInfo initInfo{};
-	initInfo.logName = "StarfieldAudioDuck";
-	SFSE::Init(a_sfse, initInfo);
-
 	const auto runtime = a_sfse->RuntimeVersion();
 	if (runtime != SFSE::RUNTIME_SF_1_16_244) {
-		REX::ERROR(
-			"StarfieldAudioDuck: unsupported Starfield runtime {}; this build only supports {}",
-			runtime,
-			SFSE::RUNTIME_SF_1_16_244);
 		return false;
 	}
+
+	SFSE::InitInfo initInfo{};
+	initInfo.logName = "StarfieldAudioDuck";
+	initInfo.trampoline = true;
+	initInfo.trampolineSize = 0x100;
+	initInfo.hook = false;
+	SFSE::Init(a_sfse, initInfo);
+	REX::INFO("StarfieldAudioDuck: supported Starfield runtime {}", runtime);
 
 	g_config = LoadConfig();
 	REX::INFO(
@@ -407,6 +488,9 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 	}
 
 	g_musicController = std::make_unique<MusicVolumeController>(g_config.mutedMusicVolume);
+	if (!InstallMusicSettingHook()) {
+		REX::WARN("StarfieldAudioDuck: manual music-volume tracking hook is unavailable; transition-time fallback remains active");
+	}
 	RequestMusicState(false);
 
 	StarfieldAudioDuck::AudioSessionMonitorConfig monitorConfig{};

@@ -1,7 +1,7 @@
 set_xmakever("3.0.0")
 
 set_project("StarfieldAudioDuck")
-set_version("0.1.1")
+set_version("0.1.3")
 set_license("MIT")
 set_arch("x64")
 set_languages("c++23")

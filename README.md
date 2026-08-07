@@ -1,20 +1,21 @@
 # Starfield Audio Duck
 
-A minimal SFSE native plugin for Starfield `1.16.244.0`. When an audio session other than Starfield is active on the Windows default playback device, the plugin temporarily changes Starfield's background music volume to the configured muted value. When external audio stops, it restores the in-game music volume captured before muting.
+A minimal SFSE native plugin for Starfield `1.16.244.0`. When an audio session other than Starfield becomes active on the Windows default playback device, the plugin applies the configured muted music volume. While external audio remains active, manual changes to Starfield's music slider are left untouched and become the next restore value. When external audio stops, the latest user-selected music volume is applied.
 
 ## Features
 
+- Applies only on external-audio state transitions; manual volume changes are not overridden while external audio is active.
 - Mutes only Starfield's background music; other game volume channels are unchanged.
 - Uses Windows Core Audio session events instead of per-frame polling.
 - Runs as one SFSE DLL; no separate helper executable is required.
 - Ignores Starfield's own audio session by process ID.
-- Applies state changes through one SFSE main-thread task and does not install a permanent per-frame task.
+- Applies transition changes through one SFSE main-thread task and does not install a permanent per-frame task.
 
 ## Compatibility
 
 This release targets Starfield `1.16.244.0`. The tested local combination is SFSE `0.2.21`.
 
-The audio control code uses build-specific RVAs from `Starfield.exe` and reads the runtime music bus ID from the game's own music record. The parameters are not tied to a particular computer, Windows user profile, or MO2 mod list when the same unmodified game executable is used. Compatibility is not guaranteed after a game update, with a different executable build, or when another plugin takes over the relevant music functions or bus.
+The audio control code uses build-specific RVAs from `Starfield.exe`, including the settings-slider call site used to remember manual music changes, and reads the runtime music bus ID from the game's own music record. The parameters are not tied to a particular computer, Windows user profile, or MO2 mod list when the same unmodified game executable is used. Compatibility is not guaranteed after a game update, with a different executable build, or when another plugin takes over the relevant music functions or bus.
 
 ## Configuration
 
@@ -23,6 +24,8 @@ The configuration file is installed at:
 ```text
 Data/SFSE/Plugins/StarfieldAudioDuck.ini
 ```
+
+For MO2, the archive install root is `SFSE/Plugins`; it does not contain an extra `Data` directory. For manual installation, merge the archive's `SFSE` directory into Starfield's `Data` directory.
 
 ```ini
 [Settings]
@@ -57,7 +60,14 @@ $log = Join-Path $env:USERPROFILE 'Documents\My Games\Starfield\SFSE\Logs\Starfi
 Get-Content $log -Tail 100
 ```
 
-The log should show the plugin version, a successful Core Audio connection, and the captured initial music volume. Play or pause audio in a browser or media player and verify that only Starfield's music is muted and restored. Version `0.1.1` was validated in-game on Starfield `1.16.244.0`.
+The log should show the plugin version, a successful Core Audio connection, and the captured initial music volume. Test all of these cases:
+
+- Start external audio: music changes to `fMutedMusicVolume` once.
+- While external audio is active, change Starfield's music slider: the new value is left alone.
+- Stop external audio: the latest slider value is applied after the configured delay.
+- Change the slider while external audio is inactive, then start and stop external audio.
+
+Version `0.1.3` targets Starfield `1.16.244.0`.
 
 ## Source
 
