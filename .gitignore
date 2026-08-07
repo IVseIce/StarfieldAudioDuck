@@ -1,0 +1,15 @@
+# xmake and compiler output
+.xmake/
+build/
+
+# Local diagnostics and temporary release staging
+.tools/
+release/
+crash-*.txt
+*.dmp
+
+# Visual Studio / editor files
+.vs/
+*.user
+*.suo
+
