@@ -10,6 +10,7 @@ A minimal SFSE native plugin for Starfield `1.16.244.0`. When an audio session o
 - Uses Windows Core Audio session events instead of per-frame polling.
 - Runs as one SFSE DLL; no separate helper executable is required.
 - Ignores Starfield's own audio session by process ID.
+- Optionally detects Starfield Galactic Radio's in-process MCI playback without modifying the radio DLL.
 - Applies transition changes through one SFSE main-thread task and does not install a permanent per-frame task.
 
 ## Compatibility
@@ -17,6 +18,8 @@ A minimal SFSE native plugin for Starfield `1.16.244.0`. When an audio session o
 This release targets Starfield `1.16.244.0`. The tested local combination is SFSE `0.2.21`.
 
 The audio control code uses build-specific RVAs from `Starfield.exe`, including the settings-slider call site used to remember manual music changes, and reads the runtime music bus ID from the game's own music record. The parameters are not tied to a particular computer, Windows user profile, or MO2 mod list when the same unmodified game executable is used. Compatibility is not guaranteed after a game update, with a different executable build, or when another plugin takes over the relevant music functions or bus.
+
+The optional Galactic Radio compatibility targets the implementation used by Starfield Galactic Radio: it observes that plugin's imported `mciSendStringW` calls for the `sfradio` alias. The radio DLL is not included or replaced. If the radio plugin is absent, the hook is not installed.
 
 ## Configuration
 
@@ -35,6 +38,7 @@ fMutedMusicVolume=0.0
 fActivationDelaySeconds=2.5
 fRestoreDelaySeconds=0.5
 bIncludeSystemSessions=1
+bEnableGalacticRadioCompatibility=1
 ```
 
 - `bEnable`: set to `0` to disable the plugin without removing it.
@@ -42,6 +46,7 @@ bIncludeSystemSessions=1
 - `fActivationDelaySeconds`: minimum continuous duration external audio must remain active before the plugin mutes music. The default is `2.5`; set it to `0` for immediate transitions.
 - `fRestoreDelaySeconds`: delay before restoring music after external audio stops.
 - `bIncludeSystemSessions`: count Windows audio sessions with process ID `0` as external audio when set to `1`.
+- `bEnableGalacticRadioCompatibility`: detect the optional Starfield Galactic Radio plugin's audible MCI playback. Set to `0` to disable the compatibility hook.
 
 ## Building
 
@@ -70,8 +75,9 @@ The log should show the plugin version, a successful Core Audio connection, and 
 - While external audio is active, change Starfield's music slider: the new value is left alone.
 - Stop external audio: the latest slider value is applied after the configured delay.
 - Change the slider while external audio is inactive, then start and stop external audio.
+- If Starfield Galactic Radio is installed, start and stop radio playback in both Radio and Podcast modes.
 
-Version `0.1.4` targets Starfield `1.16.244.0`.
+Version `0.1.5` targets Starfield `1.16.244.0`.
 
 ## Source
 

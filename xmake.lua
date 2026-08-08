@@ -1,7 +1,7 @@
 set_xmakever("3.0.0")
 
 set_project("StarfieldAudioDuck")
-set_version("0.1.4")
+set_version("0.1.5")
 set_license("MIT")
 set_arch("x64")
 set_languages("c++23")
@@ -20,6 +20,13 @@ target("StarfieldAudioDuck", function()
         description = "Mutes Starfield music while another Windows audio session is active.",
         email = ""
     })
+
+    -- MO2/Nexus archives must expose SFSE at the archive root.  The shared
+    -- CommonLibSF rule defaults package archives to a Data prefix for manual
+    -- game-directory installation, so override only the archive prefix here.
+    on_load(function(target)
+        target:data_set("commonlib.plugin.package", { prefixdir = "" })
+    end)
 
     add_files("src/**.cpp")
     add_headerfiles("src/**.h")

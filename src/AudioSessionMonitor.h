@@ -28,6 +28,7 @@ namespace StarfieldAudioDuck
 
 		[[nodiscard]] bool Start();
 		void Stop();
+		void SetCompatibilityAudioActive(bool a_active);
 
 	private:
 		struct Impl;

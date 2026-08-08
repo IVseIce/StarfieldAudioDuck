@@ -62,6 +62,7 @@ namespace StarfieldAudioDuck
 
 		[[nodiscard]] bool Start();
 		void              Stop();
+		void              SetCompatibilityAudioActive(bool a_active);
 
 		void ThreadMain();
 		[[nodiscard]] bool InitializeCOMObjects();
@@ -103,12 +104,14 @@ namespace StarfieldAudioDuck
 		const DWORD                      gameProcessID{ GetCurrentProcessId() };
 
 		std::mutex                    callbackQueueMutex{};
+		std::mutex                    aggregateStateMutex{};
 		std::deque<PendingSession>    pendingSessions{};
 		std::deque<SessionEvents*>    pendingRemovals{};
 		std::deque<bool>              pendingAggregateTransitions{};
 
 		std::atomic<std::int32_t> externalActiveSessions{ 0 };
 		std::atomic<bool>           externalAudioActive{ false };
+		bool                        compatibilityAudioActive{ false };
 
 		ComPtr<IMMDeviceEnumerator> deviceEnumerator{};
 		ComPtr<IMMDevice>           defaultDevice{};
@@ -369,6 +372,21 @@ namespace StarfieldAudioDuck
 		}
 		SignalWake();
 		thread.join();
+	}
+
+	void AudioSessionMonitor::Impl::SetCompatibilityAudioActive(const bool a_active)
+	{
+		std::scoped_lock lock(aggregateStateMutex);
+		if (compatibilityAudioActive == a_active) {
+			return;
+		}
+
+		compatibilityAudioActive = a_active;
+		const bool aggregateActive = externalActiveSessions.load(std::memory_order_acquire) > 0 || compatibilityAudioActive;
+		const bool previousAggregate = externalAudioActive.exchange(aggregateActive, std::memory_order_acq_rel);
+		if (previousAggregate != aggregateActive) {
+			QueueAggregateTransition(aggregateActive);
+		}
 	}
 
 	void AudioSessionMonitor::Impl::ThreadMain()
@@ -731,8 +749,9 @@ namespace StarfieldAudioDuck
 			return;
 		}
 
+		std::scoped_lock lock(aggregateStateMutex);
 		const auto remaining = externalActiveSessions.fetch_sub(1, std::memory_order_acq_rel) - 1;
-		const bool aggregateActive = remaining > 0;
+		const bool aggregateActive = remaining > 0 || compatibilityAudioActive;
 		const bool previousAggregate = externalAudioActive.exchange(aggregateActive, std::memory_order_acq_rel);
 		if (previousAggregate != aggregateActive) {
 			QueueAggregateTransition(aggregateActive);
@@ -753,10 +772,11 @@ namespace StarfieldAudioDuck
 			return;
 		}
 
+		std::scoped_lock lock(aggregateStateMutex);
 		const auto count = active ?
 				externalActiveSessions.fetch_add(1, std::memory_order_acq_rel) + 1 :
 				externalActiveSessions.fetch_sub(1, std::memory_order_acq_rel) - 1;
-		const bool aggregateActive = count > 0;
+		const bool aggregateActive = count > 0 || compatibilityAudioActive;
 		const bool previousAggregate = externalAudioActive.exchange(aggregateActive, std::memory_order_acq_rel);
 		if (previousAggregate != aggregateActive) {
 			QueueAggregateTransition(aggregateActive);
@@ -890,6 +910,13 @@ namespace StarfieldAudioDuck
 	{
 		if (_impl) {
 			_impl->Stop();
+		}
+	}
+
+	void AudioSessionMonitor::SetCompatibilityAudioActive(const bool a_active)
+	{
+		if (_impl) {
+			_impl->SetCompatibilityAudioActive(a_active);
 		}
 	}
 }

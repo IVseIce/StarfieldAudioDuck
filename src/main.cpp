@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "AudioSessionMonitor.h"
+#include "GalacticRadioCompatibility.h"
 
 #include "REL/THook.h"
 #include "RE/S/Setting.h"
@@ -59,6 +60,7 @@ namespace
 		std::uint32_t activationDelayMilliseconds{ 2500 };
 		std::uint32_t restoreDelayMilliseconds{ 500 };
 		bool          includeSystemSessions{ true };
+		bool          enableGalacticRadioCompatibility{ true };
 	};
 
 	std::string GetPluginDirectory()
@@ -147,6 +149,9 @@ namespace
 		config.restoreDelayMilliseconds = static_cast<std::uint32_t>(std::lround(restoreDelaySeconds * 1000.0f));
 		config.includeSystemSessions = ParseBool(
 			ReadINIValue("Settings", "bIncludeSystemSessions", "1"),
+			true);
+		config.enableGalacticRadioCompatibility = ParseBool(
+			ReadINIValue("Settings", "bEnableGalacticRadioCompatibility", "1"),
 			true);
 		return config;
 	}
@@ -357,11 +362,23 @@ namespace
 	Config                                                   g_config{};
 	std::unique_ptr<MusicVolumeController>                  g_musicController{};
 	std::unique_ptr<StarfieldAudioDuck::AudioSessionMonitor> g_audioMonitor{};
+	std::unique_ptr<StarfieldAudioDuck::GalacticRadioCompatibility> g_galacticRadioCompatibility{};
 	std::unique_ptr<REL::THook<setting_update_hook_t>>      g_musicSettingHook{};
 	const SFSE::TaskInterface*                               g_taskInterface{ nullptr };
 	std::atomic<bool>                                        g_desiredMuted{ false };
 	std::atomic<bool>                                        g_taskPending{ false };
 	std::atomic<std::uint32_t>                               g_applyRetries{ 0 };
+
+	void HandleSFSEMessage(SFSE::MessagingInterface::Message* a_message) noexcept
+	{
+		if (!a_message || a_message->type != SFSE::MessagingInterface::kPostLoad || !g_galacticRadioCompatibility) {
+			return;
+		}
+
+		if (!g_galacticRadioCompatibility->Install()) {
+			return;
+		}
+	}
 
 	RE::Setting* MusicSettingUpdateHook(RE::Setting* a_setting, float a_value)
 	{
@@ -479,12 +496,13 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 
 	g_config = LoadConfig();
 	REX::INFO(
-		"StarfieldAudioDuck: enabled={}, mutedMusicVolume={:.3f}, activationDelay={} ms, restoreDelay={} ms, includeSystemSessions={}",
+		"StarfieldAudioDuck: enabled={}, mutedMusicVolume={:.3f}, activationDelay={} ms, restoreDelay={} ms, includeSystemSessions={}, galacticRadioCompatibility={}",
 		g_config.enabled,
 		g_config.mutedMusicVolume,
 		g_config.activationDelayMilliseconds,
 		g_config.restoreDelayMilliseconds,
-		g_config.includeSystemSessions);
+		g_config.includeSystemSessions,
+		g_config.enableGalacticRadioCompatibility);
 
 	if (!g_config.enabled) {
 		return true;
@@ -518,6 +536,21 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 	if (!g_audioMonitor->Start()) {
 		REX::ERROR("StarfieldAudioDuck: failed to start Windows Core Audio monitor");
 		g_audioMonitor.reset();
+	}
+
+	if (g_config.enableGalacticRadioCompatibility && g_audioMonitor) {
+		g_galacticRadioCompatibility = std::make_unique<StarfieldAudioDuck::GalacticRadioCompatibility>(
+			[](const bool a_audioActive) {
+				if (g_audioMonitor) {
+					g_audioMonitor->SetCompatibilityAudioActive(a_audioActive);
+				}
+			});
+
+		if (auto* messaging = SFSE::GetMessagingInterface()) {
+			messaging->RegisterListener(HandleSFSEMessage);
+		} else {
+			REX::WARN("StarfieldAudioDuck: SFSE messaging interface is unavailable; Galactic Radio compatibility is inactive");
+		}
 	}
 
 	return true;
