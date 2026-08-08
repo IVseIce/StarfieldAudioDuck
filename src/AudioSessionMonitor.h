@@ -8,6 +8,7 @@ namespace StarfieldAudioDuck
 {
 	struct AudioSessionMonitorConfig
 	{
+		std::uint32_t activationDelayMilliseconds{ 2500 };
 		std::uint32_t restoreDelayMilliseconds{ 500 };
 		bool          includeSystemSessions{ true };
 	};

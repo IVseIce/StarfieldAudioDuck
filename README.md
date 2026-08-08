@@ -1,10 +1,11 @@
 # Starfield Audio Duck
 
-A minimal SFSE native plugin for Starfield `1.16.244.0`. When an audio session other than Starfield becomes active on the Windows default playback device, the plugin applies the configured muted music volume. While external audio remains active, manual changes to Starfield's music slider are left untouched and become the next restore value. When external audio stops, the latest user-selected music volume is applied.
+A minimal SFSE native plugin for Starfield `1.16.244.0`. When an audio session other than Starfield remains active on the Windows default playback device for the configured minimum duration, the plugin applies the configured muted music volume. While external audio remains active, manual changes to Starfield's music slider are left untouched and become the next restore value. When external audio stops, the latest user-selected music volume is applied.
 
 ## Features
 
 - Applies only on external-audio state transitions; manual volume changes are not overridden while external audio is active.
+- Ignores external audio shorter than the configured activation threshold, avoiding repeated changes from notification sounds.
 - Mutes only Starfield's background music; other game volume channels are unchanged.
 - Uses Windows Core Audio session events instead of per-frame polling.
 - Runs as one SFSE DLL; no separate helper executable is required.
@@ -31,12 +32,14 @@ For MO2, the archive install root is `SFSE/Plugins`; it does not contain an extr
 [Settings]
 bEnable=1
 fMutedMusicVolume=0.0
+fActivationDelaySeconds=2.5
 fRestoreDelaySeconds=0.5
 bIncludeSystemSessions=1
 ```
 
 - `bEnable`: set to `0` to disable the plugin without removing it.
 - `fMutedMusicVolume`: music volume while external audio is active. `0.0` fully mutes music.
+- `fActivationDelaySeconds`: minimum continuous duration external audio must remain active before the plugin mutes music. The default is `2.5`; set it to `0` for immediate transitions.
 - `fRestoreDelaySeconds`: delay before restoring music after external audio stops.
 - `bIncludeSystemSessions`: count Windows audio sessions with process ID `0` as external audio when set to `1`.
 
@@ -62,12 +65,13 @@ Get-Content $log -Tail 100
 
 The log should show the plugin version, a successful Core Audio connection, and the captured initial music volume. Test all of these cases:
 
-- Start external audio: music changes to `fMutedMusicVolume` once.
+- Start external audio for less than `fActivationDelaySeconds`: no music-volume transition occurs.
+- Start external audio for longer than `fActivationDelaySeconds`: music changes to `fMutedMusicVolume` once.
 - While external audio is active, change Starfield's music slider: the new value is left alone.
 - Stop external audio: the latest slider value is applied after the configured delay.
 - Change the slider while external audio is inactive, then start and stop external audio.
 
-Version `0.1.3` targets Starfield `1.16.244.0`.
+Version `0.1.4` targets Starfield `1.16.244.0`.
 
 ## Source
 

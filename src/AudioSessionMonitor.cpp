@@ -70,6 +70,7 @@ namespace StarfieldAudioDuck
 
 		void ProcessQueuedCallbacks();
 		void ProcessAggregateTransitions();
+		void ProcessActivationTimer();
 		void ProcessRestoreTimer();
 		[[nodiscard]] DWORD CalculateWaitTimeout() const;
 		void               NotifyState(bool a_externalAudioActive);
@@ -117,8 +118,11 @@ namespace StarfieldAudioDuck
 		DeviceNotification*           deviceNotification{ nullptr };
 		std::unordered_map<SessionEvents*, SessionRecord> sessions{};
 
-		bool                                    restorePending{ false };
-		std::chrono::steady_clock::time_point   restoreDue{};
+		bool                                  activationPending{ false };
+		std::chrono::steady_clock::time_point activationDue{};
+		bool                                  restorePending{ false };
+		std::chrono::steady_clock::time_point restoreDue{};
+		bool                                  activeStateNotified{ false };
 	};
 
 	struct AudioSessionMonitor::Impl::SessionEvents final : IAudioSessionEvents
@@ -390,6 +394,7 @@ namespace StarfieldAudioDuck
 
 			ProcessQueuedCallbacks();
 			ProcessAggregateTransitions();
+			ProcessActivationTimer();
 			ProcessRestoreTimer();
 
 			if (stopRequested.load(std::memory_order_acquire)) {
@@ -573,11 +578,31 @@ namespace StarfieldAudioDuck
 		}
 
 		for (const bool externalState : transitions) {
-			if (externalState) {
+			if (externalState && this->externalAudioActive.load(std::memory_order_acquire)) {
 				restorePending = false;
 				HandleAggregateTransition(true);
 			} else if (!this->externalAudioActive.load(std::memory_order_acquire)) {
 				HandleAggregateTransition(false);
+			}
+		}
+	}
+
+	void AudioSessionMonitor::Impl::ProcessActivationTimer()
+	{
+		if (!activationPending) {
+			return;
+		}
+
+		if (!externalAudioActive.load(std::memory_order_acquire)) {
+			activationPending = false;
+			return;
+		}
+
+		if (std::chrono::steady_clock::now() >= activationDue) {
+			activationPending = false;
+			if (!activeStateNotified) {
+				activeStateNotified = true;
+				NotifyState(true);
 			}
 		}
 	}
@@ -595,25 +620,39 @@ namespace StarfieldAudioDuck
 
 		if (std::chrono::steady_clock::now() >= restoreDue) {
 			restorePending = false;
-			NotifyState(false);
+			if (activeStateNotified) {
+				activeStateNotified = false;
+				NotifyState(false);
+			}
 		}
 	}
 
 	DWORD AudioSessionMonitor::Impl::CalculateWaitTimeout() const
 	{
 		DWORD timeout = sessionManager ? INFINITE : kDisconnectedSessionWaitMilliseconds;
-		if (!restorePending) {
-			return timeout;
-		}
-
 		const auto now = std::chrono::steady_clock::now();
-		if (now >= restoreDue) {
-			return 0;
+
+		if (activationPending) {
+			if (now >= activationDue) {
+				return 0;
+			}
+
+			const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(activationDue - now).count();
+			const auto activationTimeout = static_cast<DWORD>(std::clamp<std::int64_t>(remaining + 1, 1, MAXDWORD));
+			timeout = std::min(timeout, activationTimeout);
 		}
 
-		const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(restoreDue - now).count();
-		const auto restoreTimeout = static_cast<DWORD>(std::clamp<std::int64_t>(remaining + 1, 1, MAXDWORD));
-		return std::min(timeout, restoreTimeout);
+		if (restorePending) {
+			if (now >= restoreDue) {
+				return 0;
+			}
+
+			const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(restoreDue - now).count();
+			const auto restoreTimeout = static_cast<DWORD>(std::clamp<std::int64_t>(remaining + 1, 1, MAXDWORD));
+			timeout = std::min(timeout, restoreTimeout);
+		}
+
+		return timeout;
 	}
 
 	void AudioSessionMonitor::Impl::TrackSession(IAudioSessionControl* a_control)
@@ -728,13 +767,38 @@ namespace StarfieldAudioDuck
 	{
 		if (a_externalAudioActive) {
 			restorePending = false;
-		} else if (config.restoreDelayMilliseconds != 0) {
+			if (activeStateNotified) {
+				activationPending = false;
+				return;
+			}
+
+			if (config.activationDelayMilliseconds != 0) {
+				activationPending = true;
+				activationDue = std::chrono::steady_clock::now() +
+					std::chrono::milliseconds(config.activationDelayMilliseconds);
+				return;
+			}
+
+			activationPending = false;
+			activeStateNotified = true;
+			NotifyState(true);
+			return;
+		} else {
+			activationPending = false;
+			if (!activeStateNotified) {
+				restorePending = false;
+				return;
+			}
+		}
+
+		if (config.restoreDelayMilliseconds != 0) {
 			restorePending = true;
-				restoreDue = std::chrono::steady_clock::now() +
-					std::chrono::milliseconds(config.restoreDelayMilliseconds);
+			restoreDue = std::chrono::steady_clock::now() +
+				std::chrono::milliseconds(config.restoreDelayMilliseconds);
 			return;
 		}
 
+		activeStateNotified = false;
 		NotifyState(a_externalAudioActive);
 	}
 

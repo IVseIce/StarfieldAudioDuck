@@ -56,6 +56,7 @@ namespace
 	{
 		bool          enabled{ true };
 		float         mutedMusicVolume{ 0.0f };
+		std::uint32_t activationDelayMilliseconds{ 2500 };
 		std::uint32_t restoreDelayMilliseconds{ 500 };
 		bool          includeSystemSessions{ true };
 	};
@@ -130,6 +131,13 @@ namespace
 			0.0f,
 			0.0f,
 			1.0f);
+
+		const float activationDelaySeconds = ParseFloat(
+			ReadINIValue("Settings", "fActivationDelaySeconds", "2.5"),
+			2.5f,
+			0.0f,
+			30.0f);
+		config.activationDelayMilliseconds = static_cast<std::uint32_t>(std::lround(activationDelaySeconds * 1000.0f));
 
 		const float restoreDelaySeconds = ParseFloat(
 			ReadINIValue("Settings", "fRestoreDelaySeconds", "0.5"),
@@ -471,9 +479,10 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 
 	g_config = LoadConfig();
 	REX::INFO(
-		"StarfieldAudioDuck: enabled={}, mutedMusicVolume={:.3f}, restoreDelay={} ms, includeSystemSessions={}",
+		"StarfieldAudioDuck: enabled={}, mutedMusicVolume={:.3f}, activationDelay={} ms, restoreDelay={} ms, includeSystemSessions={}",
 		g_config.enabled,
 		g_config.mutedMusicVolume,
+		g_config.activationDelayMilliseconds,
 		g_config.restoreDelayMilliseconds,
 		g_config.includeSystemSessions);
 
@@ -494,6 +503,7 @@ SFSE_PLUGIN_LOAD(const SFSE::LoadInterface* a_sfse)
 	RequestMusicState(false);
 
 	StarfieldAudioDuck::AudioSessionMonitorConfig monitorConfig{};
+	monitorConfig.activationDelayMilliseconds = g_config.activationDelayMilliseconds;
 	monitorConfig.restoreDelayMilliseconds = g_config.restoreDelayMilliseconds;
 	monitorConfig.includeSystemSessions = g_config.includeSystemSessions;
 	g_audioMonitor = std::make_unique<StarfieldAudioDuck::AudioSessionMonitor>(
